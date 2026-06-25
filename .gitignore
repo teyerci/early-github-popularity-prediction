@@ -1,0 +1,43 @@
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and machine state
+.venv*/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.DS_Store
+.cache/
+.claude/
+.matplotlib/
+.matplotlib-cache/
+.ipynb_checkpoints/
+
+# Large/raw/generated working data
+cloned_repos/
+out/
+gh_archive_raw/
+gh_archive_hourly/
+*.csv
+*.csv.gz
+*.json
+
+# Local-only archived material from the working project
+archive/
+
+# Rendered QA previews are useful locally but too noisy for GitHub.
+assets/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.old
+*.old1
