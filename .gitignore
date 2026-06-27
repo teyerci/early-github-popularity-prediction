@@ -25,9 +25,6 @@ cloned_repos/
 out/
 gh_archive_raw/
 gh_archive_hourly/
-*.csv
-*.csv.gz
-*.json
 
 # Local-only archived material from the working project
 archive/
