@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: "Early GitHub Popularity Prediction"
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+
+authors:
+  - family-names: "Eyerci"
+    given-names: "Tarkan"
+    orcid: "https://orcid.org/0000-0003-1997-2849"
+  - family-names: "Ozkan"
+    given-names: "Aysegul"
+    orcid: "https://orcid.org/0000-0003-4331-3771"
+
+
+repository-code: "https://github.com/teyerci/early-github-popularity-prediction"
+url: "https://github.com/teyerci/early-github-popularity-prediction"
+doi: "10.5281/zenodo.20856258"
+
+abstract: "Replication pipeline for predicting GitHub repository popularity from early repository snapshots, GH Archive event counts, effective-start alignment, and momentum-based features."
+
+keywords:
+  - GitHub
+  - open source software
+  - repository popularity
+  - GH Archive
+  - mining software repositories
+  - machine learning
+
+license: MIT
+version: "1.0.0"
+date-released: "2026-06-25"

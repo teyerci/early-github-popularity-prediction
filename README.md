@@ -1,3 +1,6 @@
+
+[![DOI](https://zenodo.org/badge/1280089833.svg)](https://doi.org/10.5281/zenodo.20856257)
+
 # GitHub Popularity Prediction Pipeline
 
 This repository contains the scripts needed to reproduce the data pipeline and baseline machine-learning results.
