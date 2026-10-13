@@ -9,7 +9,8 @@ This repository contains the scripts needed to reproduce the data pipeline and b
 
 The reported pipeline uses the following settings.
 
-- Repository cohort: GitHub repositories created in 2024.
+- Repository cohort: GitHub repositories created in 2024, sampled by `01_gh_repo_list_create.py` as the top-starred repositories for each creation day (55 per day for each of the 366 days, 20,130 in total), ranked by star count when the list was collected. Inclusion therefore depends on later popularity: the cohort covers repositories that became relatively popular, not all repositories created in 2024 (the smallest `stars_now` in the committed list is 56). Re-running step 01 today returns a different list; use the committed `repos_2024_20k.csv.gz` to reproduce the reported cohort.
+- Cohort attrition: of the 20,130 listed repositories, 19,611 have snapshot features (the rest were skipped as too large, unavailable or failed to clone), and step 13 then drops the 277 whose 1-year window is not fully covered by GH Archive data, leaving 19,334 for modelling.
 - Effective-start rule: `effective_start_date = max(git_actual_start_date, github_created_at)`.
 - `git_actual_start_date` is derived from the cloned git history by scanning commits oldest-first. The first qualifying start point is the earliest day with at least 3 commits, or the earliest commit that touches at least 3 files. If neither condition is found, the script falls back to the first commit in the repository history.
 - Snapshot windows: `1m`, `3m`, and `6m`, computed as 30, 90, and 180 days after the effective start date.
@@ -22,8 +23,10 @@ The reported pipeline uses the following settings.
 - Target stratification: `pd.qcut` on `log_WatchEvent_1year` with 4 bins; the same split is used for every configuration.
 - Main target (`TARGET_MODE=future`, the default): `log_WatchEvent_future_{window}`, the log1p of WatchEvents in `[start + window, start + 365 days)`. Each window's Static, Snapshot, GH Archive and Combined models predict only the stars that arrive after their feature cutoff, so the target does not overlap the features.
 - Cumulative target (`TARGET_MODE=cumulative`): `log_WatchEvent_1year`, the log1p of WatchEvents in `[start, start + 365 days)`. This target includes the 1m/3m/6m feature windows and is kept only for comparison with earlier results.
+- Static features: `is_fork` and `git_start_minus_created_days`. The `description_length`, `topic_count` and `has_license` columns come from the step 01 API response, which was collected after the feature and target windows, so step 13 excludes them by default. Set `INCLUDE_COLLECTION_TIME_METADATA=1` to include them.
+- GH Archive date range: 2024-01-01 to 2026-03-14 (the daily files used for the committed outputs).
 - Coverage filter: step 11 writes `window_complete_{window}` flags, and step 13 drops repositories whose 365-day window is not fully covered by the daily GH Archive files (late effective starts, or missing days), instead of counting the uncovered days as zero events.
-- Baseline model depths: Random Forest `max_depth` values of 6, 8, and 12; the selected main model uses Combined 3m features with `max_depth=8` (test R² 0.409 on `log_WatchEvent_future_3m`).
+- Baseline model depths: Random Forest `max_depth` values of 6, 8, and 12; the selected main model uses Combined 3m features with `max_depth=8` (test R² 0.402 on `log_WatchEvent_future_3m`).
 
 Dependency versions used for data collection (steps 01–10):
 
@@ -36,7 +39,7 @@ requests 2.33.1
 tqdm 4.68.3
 ```
 
-Dependency versions used to regenerate the committed step 11–13 outputs (future-growth target):
+Dependency versions used to regenerate the committed step 11–13 outputs (future-growth target), pinned in `requirements.txt`; these install on Python 3.10–3.13:
 
 ```text
 Python 3.10.12
@@ -62,7 +65,14 @@ export GITHUB_TOKEN="your_token_here"
 
 ## Pipeline Scripts
 
-Run the scripts in this order.
+Run the scripts in this order. The numbering follows the original working project; scripts 02 and 04–07 were exploratory steps (feature fetching, earlier event-count, EDA and modelling scripts) that the final pipeline does not use, so they are not included.
+
+### Reproducing from the committed data
+
+The committed `.csv.gz` / `.json.gz` files are the frozen inputs and outputs of the reported run. pandas reads gzip files directly, so pass the `.csv.gz` names in the environment variables below instead of decompressing them. Steps 01, 08 and 03 query live services and will not reproduce the same cohort or snapshots; to reproduce the models, start from the committed files:
+
+- Step 12 → 13 need only the committed files: `repos_2024_20k.csv.gz`, `repos_snapshot_features_20k_effective_start_1m3m6m.csv.gz` and `repos_2024_20k_gh_archive_windows_effective_start_1m3m6m.csv.gz`.
+- Step 11 additionally needs the `out/` daily count files (about 14 GB, not committed), which step 03 rebuilds from GH Archive.
 
 ### 1. Create Repository List
 
@@ -102,7 +112,7 @@ clone_skip_20k.json
 ```bash
 export REPOS_CSV="repos_2024_20k.csv"
 export GH_ARCHIVE_START_DATE="2024-01-01"
-export GH_ARCHIVE_END_DATE="2025-12-31"
+export GH_ARCHIVE_END_DATE="2026-03-14"
 export GH_DAILY_COUNTS_DIR="out"
 python 03_download_gh_archive_daily_counts.py
 ```
@@ -111,7 +121,10 @@ Output pattern:
 
 ```text
 out/gh_archive_counts_YYYY-MM-DD.csv.gz
+out/gh_archive_missing_hours.csv
 ```
+
+A daily file is written only when every hour was downloaded or reported missing by GH Archive (HTTP 404); hours that GH Archive does not have are listed in `gh_archive_missing_hours.csv`. If an hour still fails after retries, the day is not written and the script exits with an error, so rerunning it retries only the missing days.
 
 ### 4. Aggregate GH Archive Windows
 

@@ -5,6 +5,12 @@ This script creates the intermediate files consumed by
 
     out/gh_archive_counts_YYYY-MM-DD.csv.gz
 
+A daily file is written only when every hour was either downloaded or reported
+missing by GH Archive (HTTP 404). Hours that GH Archive does not have are
+logged to out/gh_archive_missing_hours.csv. If any hour fails after retries,
+the day is not written, so the next run retries it instead of keeping an
+undercounted day.
+
 Each output row is one repository/day and each event type is a count column.
 Only repositories listed in REPOS_CSV are retained, which keeps the daily files
 small enough for later window aggregation.
@@ -28,7 +34,7 @@ from tqdm import tqdm
 REPOS_CSV = os.getenv("REPOS_CSV", "repos_2024_20k.csv")
 OUTPUT_DIR = Path(os.getenv("GH_DAILY_COUNTS_DIR", "out"))
 START_DATE = os.getenv("GH_ARCHIVE_START_DATE", "2024-01-01")
-END_DATE = os.getenv("GH_ARCHIVE_END_DATE", "2025-12-31")
+END_DATE = os.getenv("GH_ARCHIVE_END_DATE", "2026-03-14")
 REQUEST_TIMEOUT = int(os.getenv("GH_ARCHIVE_TIMEOUT_SECONDS", "60"))
 MAX_RETRIES = int(os.getenv("GH_ARCHIVE_MAX_RETRIES", "3"))
 SLEEP_SECONDS = float(os.getenv("GH_ARCHIVE_SLEEP_SECONDS", "0.2"))
@@ -54,20 +60,36 @@ def load_repo_lookup() -> tuple[set[int], dict[int, str]]:
     return repo_ids, names
 
 
-def fetch_hour(day: date, hour: int) -> bytes | None:
+MISSING_HOURS_CSV = OUTPUT_DIR / "gh_archive_missing_hours.csv"
+
+
+def fetch_hour(day: date, hour: int) -> tuple[str, bytes | None]:
+    """Return ("ok", content), ("missing", None) for a 404, or ("failed", None)."""
     url = f"https://data.gharchive.org/{day.isoformat()}-{hour}.json.gz"
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = requests.get(url, timeout=REQUEST_TIMEOUT)
             if response.status_code == 404:
-                return None
+                return "missing", None
             if response.status_code == 200:
-                return response.content
+                return "ok", response.content
             print(f"HTTP {response.status_code} for {url} (attempt {attempt}/{MAX_RETRIES})")
         except requests.RequestException as exc:
             print(f"Request failed for {url} (attempt {attempt}/{MAX_RETRIES}): {exc}")
         time.sleep(SLEEP_SECONDS * attempt)
-    return None
+    return "failed", None
+
+
+def log_missing_hours(day: date, hours: list[int]) -> None:
+    if not hours:
+        return
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    write_header = not MISSING_HOURS_CSV.exists()
+    with MISSING_HOURS_CSV.open("a") as f:
+        if write_header:
+            f.write("day,hour\n")
+        for hour in hours:
+            f.write(f"{day.isoformat()},{hour}\n")
 
 
 def count_events_for_hour(content: bytes, repo_ids: set[int]) -> dict[tuple[int, str], int]:
@@ -133,20 +155,36 @@ def main() -> None:
     print(f"Output directory: {OUTPUT_DIR}")
     print(f"Date range      : {start} to {end}")
 
+    failed_days = []
     for day in tqdm(list(iter_days(start, end)), desc="GH Archive days"):
         out_path = OUTPUT_DIR / f"gh_archive_counts_{day.isoformat()}.csv.gz"
         if out_path.exists():
             continue
 
         daily_counts: dict[tuple[int, str], int] = {}
+        missing_hours = []
+        failed_hours = []
         for hour in range(24):
-            content = fetch_hour(day, hour)
-            if content is None:
+            status, content = fetch_hour(day, hour)
+            if status == "missing":
+                missing_hours.append(hour)
+                continue
+            if status == "failed":
+                failed_hours.append(hour)
                 continue
             merge_counts(daily_counts, count_events_for_hour(content, repo_ids))
             time.sleep(SLEEP_SECONDS)
 
+        if failed_hours:
+            print(f"Skipping {day}: hours {failed_hours} failed after {MAX_RETRIES} attempts; rerun to retry.")
+            failed_days.append(day)
+            continue
+
+        log_missing_hours(day, missing_hours)
         write_daily_counts(day, daily_counts, names)
+
+    if failed_days:
+        raise SystemExit(f"{len(failed_days)} days were not written because downloads failed; rerun the script.")
 
 
 if __name__ == "__main__":

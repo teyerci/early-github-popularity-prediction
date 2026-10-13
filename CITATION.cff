@@ -14,7 +14,7 @@ authors:
 
 repository-code: "https://github.com/teyerci/early-github-popularity-prediction"
 url: "https://github.com/teyerci/early-github-popularity-prediction"
-doi: "10.5281/zenodo.20856258"
+doi: "10.5281/zenodo.20856257"
 
 abstract: "Replication pipeline for predicting GitHub repository popularity from early repository snapshots, GH Archive event counts, effective-start alignment, and momentum-based features."
 

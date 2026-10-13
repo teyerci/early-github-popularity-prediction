@@ -35,6 +35,18 @@ IGNORE_COLUMNS = {
     "WatchEvent_1year",
     "log_WatchEvent_1year",
 }
+# Repository metadata from the step 01 API response. It is observed when the list
+# was collected, after the feature and target windows, so popular repositories
+# may have added topics, a license or a longer description in the meantime.
+COLLECTION_TIME_COLUMNS = {
+    "description_length",
+    "topic_count",
+    "has_license",
+}
+INCLUDE_COLLECTION_TIME_METADATA = os.getenv("INCLUDE_COLLECTION_TIME_METADATA", "0") == "1"
+if not INCLUDE_COLLECTION_TIME_METADATA:
+    IGNORE_COLUMNS = IGNORE_COLUMNS | COLLECTION_TIME_COLUMNS
+
 NON_FEATURE_PREFIXES = (
     "WatchEvent_future_",
     "log_WatchEvent_future_",
@@ -179,6 +191,7 @@ def evaluate():
     print(f"Input data: {INPUT_CSV}")
     print(f"Rows: {len(df):,}")
     print(f"Target mode: {TARGET_MODE} ({', '.join(targets)})")
+    print(f"Collection-time metadata features: {'included' if INCLUDE_COLLECTION_TIME_METADATA else 'excluded'}")
     print("Feature configs:")
     for config_name, features in configs.items():
         print(f"  {config_name:<14}: {len(features):,} features")
