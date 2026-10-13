@@ -15,7 +15,12 @@ INPUT_CSV = os.getenv("COMBINED_FEATURES_CSV", "repos_sample_980_combined_featur
 RESULTS_CSV = os.getenv("MODEL_RESULTS_CSV", "repos_sample_980_combined_model_results.csv")
 RF_DEPTH_RESULTS_CSV = os.getenv("RF_DEPTH_RESULTS_CSV", "repos_sample_980_rf_depth_comparison.csv")
 SEED = 42
-TARGET = "log_WatchEvent_1year"
+# "future": each window's models predict log1p of WatchEvents in [start + window, start + 1 year),
+# so the target does not overlap the features. "cumulative": the original
+# log_WatchEvent_1year target over [start, start + 1 year), kept for comparison.
+TARGET_MODE = os.getenv("TARGET_MODE", "future")
+CUMULATIVE_TARGET = "log_WatchEvent_1year"
+COVERAGE_COLUMN = "window_complete_1year"
 RF_MAX_DEPTHS = [6, 8, 12]
 N_TARGET_STRATA = 4
 WINDOW_LABELS = ["1m", "3m", "6m"]
@@ -30,6 +35,11 @@ IGNORE_COLUMNS = {
     "WatchEvent_1year",
     "log_WatchEvent_1year",
 }
+NON_FEATURE_PREFIXES = (
+    "WatchEvent_future_",
+    "log_WatchEvent_future_",
+    "window_complete_",
+)
 
 
 def clean_for_modeling(df):
@@ -38,9 +48,33 @@ def clean_for_modeling(df):
     for col in df.select_dtypes(include="bool").columns:
         df[col] = df[col].astype(int)
 
-    numeric_cols = df.select_dtypes(include=np.number).columns
+    # Fill missing feature values only; a missing target must not become a zero-star example.
+    numeric_cols = [
+        c for c in df.select_dtypes(include=np.number).columns
+        if c not in IGNORE_COLUMNS and not c.startswith(NON_FEATURE_PREFIXES)
+    ]
     df[numeric_cols] = df[numeric_cols].fillna(0)
     return df
+
+
+def target_for(config_name):
+    if TARGET_MODE == "cumulative":
+        return CUMULATIVE_TARGET
+    if TARGET_MODE != "future":
+        raise ValueError(f"Unknown TARGET_MODE {TARGET_MODE!r}. Use 'future' or 'cumulative'.")
+    label = config_name.split()[-1]
+    return f"log_WatchEvent_future_{label}"
+
+
+def select_complete_rows(df):
+    if COVERAGE_COLUMN not in df.columns:
+        raise ValueError(
+            f"{INPUT_CSV} has no {COVERAGE_COLUMN!r} column; rerun steps 11 and 12 "
+            "so incomplete GH Archive windows can be excluded."
+        )
+    complete = df[COVERAGE_COLUMN] == 1
+    print(f"Dropped {int((~complete).sum()):,} repos whose 1-year window is not fully covered by GH Archive files.")
+    return df[complete]
 
 
 def feature_configs(df):
@@ -68,12 +102,20 @@ def feature_configs(df):
     non_static.update(c for c in df.columns if c.startswith("gh_") and c.endswith("_1year"))
 
     numeric_cols = set(df.select_dtypes(include=np.number).columns)
-    static = sorted(c for c in numeric_cols if c not in IGNORE_COLUMNS and c not in non_static)
+    static = sorted(
+        c for c in numeric_cols
+        if c not in IGNORE_COLUMNS and c not in non_static and not c.startswith(NON_FEATURE_PREFIXES)
+    )
 
-    configs = {"Static": static}
+    configs = {}
     for label in WINDOW_LABELS:
         snapshot_features = snapshot_by_window[label]
         gh_features = gh_by_window[label]
+
+        # Static baseline per window, so every config in a window shares its target.
+        if TARGET_MODE == "future" or label == WINDOW_LABELS[0]:
+            static_name = f"Static {label}" if TARGET_MODE == "future" else "Static"
+            configs[static_name] = static
 
         if snapshot_features:
             configs[f"Snapshot {label}"] = snapshot_features
@@ -87,7 +129,7 @@ def feature_configs(df):
 
 def make_target_strata(df):
     strata = pd.qcut(
-        df[TARGET],
+        df[CUMULATIVE_TARGET],
         q=N_TARGET_STRATA,
         labels=False,
         duplicates="drop",
@@ -120,15 +162,23 @@ def make_models():
 
 def evaluate():
     df = clean_for_modeling(pd.read_csv(INPUT_CSV))
-    if TARGET not in df.columns:
-        raise ValueError(f"{INPUT_CSV} must contain target column {TARGET!r}.")
+    df = select_complete_rows(df)
 
     configs = feature_configs(df)
+    targets = sorted({target_for(name) for name in configs})
+    missing = [t for t in [CUMULATIVE_TARGET, *targets] if t not in df.columns]
+    if missing:
+        raise ValueError(f"{INPUT_CSV} is missing target columns {missing}; rerun steps 11 and 12.")
+    n_missing_target = int(df[targets].isna().any(axis=1).sum())
+    if n_missing_target:
+        raise ValueError(f"{n_missing_target:,} rows have a missing target; check the step 11/12 merge.")
+
+    # One split for every config, stratified on the cumulative target, so results are comparable.
     target_strata = make_target_strata(df)
 
     print(f"Input data: {INPUT_CSV}")
     print(f"Rows: {len(df):,}")
-    print(f"Target: {TARGET}")
+    print(f"Target mode: {TARGET_MODE} ({', '.join(targets)})")
     print("Feature configs:")
     for config_name, features in configs.items():
         print(f"  {config_name:<14}: {len(features):,} features")
@@ -140,15 +190,15 @@ def evaluate():
         random_state=SEED,
         stratify=target_strata,
     )
-    y_train = df.loc[train_idx, TARGET]
-    y_test = df.loc[test_idx, TARGET]
-
     rows = []
 
     for config_name, features in configs.items():
         if not features:
             continue
 
+        target = target_for(config_name)
+        y_train = df.loc[train_idx, target]
+        y_test = df.loc[test_idx, target]
         X_train = df.loc[train_idx, features]
         X_test = df.loc[test_idx, features]
 
@@ -166,6 +216,7 @@ def evaluate():
             rows.append(
                 {
                     "Config": config_name,
+                    "Target": target,
                     "Model": model_name,
                     "n_features": len(features),
                     "Train R2": train_r2,
@@ -176,7 +227,10 @@ def evaluate():
                 }
             )
 
-    results = pd.DataFrame(rows).sort_values(["Test R2", "Test RMSE"], ascending=[False, True])
+    results = pd.DataFrame(rows).sort_values(
+        ["Target", "Test R2", "Test RMSE"],
+        ascending=[True, False, True],
+    )
     results.to_csv(RESULTS_CSV, index=False)
 
     rf_depth_results = results[results["Model"].str.startswith("Random Forest")].copy()

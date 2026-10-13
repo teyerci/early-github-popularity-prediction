@@ -12,6 +12,14 @@ TARGET_COLUMNS = {
     "log_WatchEvent_1year",
 }
 
+# Future-growth targets and archive coverage flags from step 11. They are not
+# gh_* features, so they are mapped by repo_id like the targets above.
+CARRIED_PREFIXES = (
+    "WatchEvent_future_",
+    "log_WatchEvent_future_",
+    "window_complete_",
+)
+
 # These columns are older first-month counts from the creation-date pipeline.
 # The combined experiment uses gh_*_1m/3m/6m counts aligned to snapshot start_date.
 BASE_CREATION_WINDOW_EVENT_COLUMNS = {
@@ -175,8 +183,12 @@ def combine_features():
         suffixes=("", "_snapshot"),
     )
 
+    carried_columns = [
+        c for c in gh_windows.columns
+        if c in TARGET_COLUMNS or c.startswith(CARRIED_PREFIXES)
+    ]
     gh_join = gh_windows.drop(
-        columns=["start_date", "WatchEvent_1year", "log_WatchEvent_1year"],
+        columns=["start_date", *carried_columns],
         errors="ignore",
     )
     combined = combined.merge(
@@ -185,7 +197,7 @@ def combine_features():
         how="left",
     )
 
-    for target_col in TARGET_COLUMNS:
+    for target_col in carried_columns:
         if target_col in base_static.columns:
             continue
         if target_col in gh_windows.columns:
@@ -222,7 +234,10 @@ def combine_features():
             ]
         )
     ]
-    target_cols = [c for c in TARGET_COLUMNS if c in combined.columns]
+    target_cols = [
+        c for c in combined.columns
+        if c in TARGET_COLUMNS or c.startswith(CARRIED_PREFIXES[:2])
+    ]
 
     print(f"Saved {len(combined)} repos to {OUTPUT_CSV}")
     print(f"Base/static + target columns: {len(base_static.columns)}")

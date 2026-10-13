@@ -19,11 +19,13 @@ The reported pipeline uses the following settings.
 - API size safety margin: `API_SIZE_SAFETY_MARGIN_MB=50`, so the default effective API skip threshold is 450 MB before cloning.
 - Local clone observation limit: `LOCAL_CLONE_LIMIT_MB=500` MB; already-cloned or unexpectedly large repositories are processed when possible and then removed.
 - Train/test split: 80/20 split with `random_state=42`.
-- Target stratification: `pd.qcut` on `log_WatchEvent_1year` with 4 bins.
-- Main target: `log_WatchEvent_1year`, where the raw target is `WatchEvent_1year`.
-- Baseline model depths: Random Forest `max_depth` values of 6, 8, and 12; the selected main model uses Combined 3m features with `max_depth=8`.
+- Target stratification: `pd.qcut` on `log_WatchEvent_1year` with 4 bins; the same split is used for every configuration.
+- Main target (`TARGET_MODE=future`, the default): `log_WatchEvent_future_{window}`, the log1p of WatchEvents in `[start + window, start + 365 days)`. Each window's Static, Snapshot, GH Archive and Combined models predict only the stars that arrive after their feature cutoff, so the target does not overlap the features.
+- Cumulative target (`TARGET_MODE=cumulative`): `log_WatchEvent_1year`, the log1p of WatchEvents in `[start, start + 365 days)`. This target includes the 1m/3m/6m feature windows and is kept only for comparison with earlier results.
+- Coverage filter: step 11 writes `window_complete_{window}` flags, and step 13 drops repositories whose 365-day window is not fully covered by the daily GH Archive files (late effective starts, or missing days), instead of counting the uncovered days as zero events.
+- Baseline model depths: Random Forest `max_depth` values of 6, 8, and 12; the selected main model uses Combined 3m features with `max_depth=8` (test R² 0.409 on `log_WatchEvent_future_3m`).
 
-Dependency versions used for the archived run:
+Dependency versions used for data collection (steps 01–10):
 
 ```text
 Python 3.13.13
@@ -32,6 +34,16 @@ numpy 2.4.4
 scikit-learn 1.8.0
 requests 2.33.1
 tqdm 4.68.3
+```
+
+Dependency versions used to regenerate the committed step 11–13 outputs (future-growth target):
+
+```text
+Python 3.10.12
+pandas 2.3.3
+numpy 2.2.6
+scikit-learn 1.7.2
+tqdm 4.70.1
 ```
 
 ## Setup
@@ -141,6 +153,7 @@ repos_2024_20k_combined_features_effective_start_1m3m6m.csv
 export COMBINED_FEATURES_CSV="repos_2024_20k_combined_features_effective_start_1m3m6m.csv"
 export MODEL_RESULTS_CSV="repos_2024_20k_combined_model_results_effective_start_1m3m6m.csv"
 export RF_DEPTH_RESULTS_CSV="repos_2024_20k_rf_depth_comparison_effective_start_1m3m6m.csv"
+export TARGET_MODE="future"  # or "cumulative" for the overlapping 1-year target
 python 13_gh_repo_ml_combined_features.py
 ```
 

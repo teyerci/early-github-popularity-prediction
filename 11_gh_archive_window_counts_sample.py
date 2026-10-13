@@ -255,6 +255,49 @@ def add_target_features(output):
         output["WatchEvent_1year"] = output[watch_col].fillna(0).astype(int)
         output["log_WatchEvent_1year"] = np.log1p(output["WatchEvent_1year"])
 
+        # The 1-year window contains each feature window, so the cumulative target
+        # overlaps the features. The future target counts only WatchEvents after
+        # the feature cutoff: [start + window, start + 1 year).
+        for label in WINDOWS:
+            window_col = f"gh_WatchEvent_{label}"
+            if window_col not in output.columns:
+                continue
+            future_col = f"WatchEvent_future_{label}"
+            output[future_col] = (output["WatchEvent_1year"] - output[window_col]).clip(lower=0).astype(int)
+            output[f"log_{future_col}"] = np.log1p(output[future_col])
+
+    return output
+
+
+def add_coverage_flags(output, repos, file_days):
+    """
+    Flag windows that the daily files do not fully cover.
+
+    Without this, days past the end of the archive (or missing days) are
+    silently counted as zero events, which truncates targets and features.
+    """
+    first_day, last_day = min(file_days), max(file_days)
+    missing_days = pd.DatetimeIndex(
+        sorted(set(pd.date_range(first_day, last_day, freq="D")) - set(file_days))
+    )
+    if len(missing_days):
+        print(f"Warning: {len(missing_days)} missing daily files between {first_day.date()} and {last_day.date()}")
+
+    covered = repos[["repo_id"]].copy()
+    for label in {**WINDOWS, **TARGET_WINDOWS}:
+        start = repos["start_day"]
+        end = repos[f"end_day_{label}"]
+        complete = (start >= first_day) & (end <= last_day + pd.Timedelta(days=1))
+        for day in missing_days:
+            complete &= ~((day >= start) & (day < end))
+        covered[f"window_complete_{label}"] = complete.astype(int)
+
+    output = output.merge(covered, on="repo_id", how="left")
+    print(f"Archive coverage      : {first_day.date()} .. {last_day.date()}")
+    for label in {**WINDOWS, **TARGET_WINDOWS}:
+        n_incomplete = int((output[f"window_complete_{label}"] == 0).sum())
+        print(f"Incomplete {label:<6} windows: {n_incomplete:,} of {len(output):,}")
+
     return output
 
 
@@ -279,10 +322,12 @@ def aggregate_window_counts():
     print(f"Feature windows       : {list(WINDOWS)}")
     print(f"Target windows        : {list(TARGET_WINDOWS)}")
 
+    file_days = []
     for file_path in tqdm(daily_files, desc="Scanning daily GH Archive files"):
         file_day = parse_daily_file_date(file_path)
         if file_day is None:
             continue
+        file_days.append(file_day)
 
         daily = pd.read_csv(file_path)
         if daily.empty or "repo_id" not in daily.columns:
@@ -343,6 +388,7 @@ def aggregate_window_counts():
 
     output = add_growth_features(output)
     output = add_target_features(output)
+    output = add_coverage_flags(output, repos, file_days)
 
     output.to_csv(OUTPUT_CSV, index=False)
     print(f"Saved {len(output)} repos to {OUTPUT_CSV}")
